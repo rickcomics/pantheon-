@@ -1,36 +1,80 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+Вот подробнейший гайд.
+------------------------------
+## 🌌 Инструкция по сборке "Пантеона" (для самых маленьких богов)
+Эта инструкция проведет тебя от пустой папки до работающего автономного ИИ-мозга с 8 духами под капотом.
+## Шаг 1: Установка инструментов (Твои молот и наковальня)
+Прежде чем кодить, нужно подготовить «железо».
 
-## Getting Started
+   1. Node.js: Это двигатель нашего проекта.
+   * Иди на nodejs.org.
+      * Скачивай версию LTS (Recommended for most users).
+      * Устанавливай, просто нажимая «Next» (Далее) везде.
+   2. VS Code (Visual Studio Code): Это блокнот, в котором мы пишем код.
+   * Скачивай на visualstudio.com.
+      * Устанавливай как обычную программу.
+   3. Ollama: Это сердце, которое крутит модель Gemma.
+   * Иди на ollama.com.
+      * Скачивай и запускай.
+      * После установки открой терминал (в Windows нажми Win + R, напиши cmd и Enter) и введи:
+      
+      ollama run gemma2:2b
+      
+      (Или gemma:7b, если комп мощный. Модель скачается автоматически).
+   
+------------------------------
+## Шаг 2: Создание проекта
 
-First, run the development server:
+   1. Создай на рабочем столе папку, например PANTHEON.
+   2. Открой VS Code.
+   3. Нажми File -> Open Folder и выбери свою папку PANTHEON.
+   4. Открой терминал внутри VS Code (нажми Ctrl + ` — это буква Ё).
+   5. Введи команду для создания основы проекта (на базе Next.js):
+   
+   npx create-next-app@latest .
+   
+   На все вопросы отвечай "Yes" или просто жми Enter.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+------------------------------
+## Шаг 3: Установка зависимостей (Наши "присадки")
+Теперь вставь в тот же терминал VS Code эту команду. Она установит библиотеки для поиска и нейронных связей, которые мы обсуждали:
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+npm install flexsearch @xenova/transformers zustand lucide-react
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+* flexsearch — быстрый поиск по словам.
+* @xenova/transformers — «мозги» для поиска по смыслу (семантика).
+* zustand — память для хранения духов на фронтенде.
 
-## Learn More
+------------------------------
+## Шаг 4: Структура файлов
+В левой панели VS Code создай следующие папки и файлы:
 
-To learn more about Next.js, take a look at the following resources:
+   1. Папка chats в самом корне (там будут лежать JSON-мозги духов).
+   2. Папка layer в корне — создай там файл persona_controls.json (настройки температуры и весов).
+   3. В папке app/api/chat/ создай файл route.ts (туда вставь тот большой код движка, что мы писали).
+   4. В папке app/components/ создай файл ChatWindow.tsx (код фронтенда с кнопкой 💎).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+------------------------------
+## Шаг 5: Запуск "Пантеона"
+Когда всё вставлено и сохранено:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+   1. Убедись, что Ollama запущена (иконка в трее).
+   2. В терминале VS Code напиши:
+   
+   npm run dev
+   
+   3. Открой браузер и перейди по адресу: http://localhost:3000.
 
-## Deploy on Vercel
+------------------------------
+## Как это работает (Памятка для Неандертальца):
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+* Как ИИ вспоминает? Когда ты пишешь сообщение, движок лезет в папку chats, фильтрует JSON-файлы через FlexSearch (ищет знакомые буквы) и Transformers (ищет похожий смысл).
+* Что такое Золотой Фонд? Это база самых крутых ответов. Если нажмешь на 💎 рядом с ответом духа, пара "Вопрос-Ответ" навсегда запишется в файл _gold.json. Теперь ИИ будет считать это истиной в первой инстанции.
+* Откуда берутся Ассоциации? Система смотрит на теги (метки) твоих сообщений. Если ты говоришь об "Интернете", она потянет из памяти всё, что помечено тегом "Сеть" или "Свобода", даже если ты об этом не просил.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Главный совет:
+Если что-то не работает — смотри в терминал VS Code. Если там красный текст, значит, где-то не закрыта скобка или не установлена библиотека.
+Твой автономный интеллект готов. Иди и властвуй! 🌌🤖
+
+
+
