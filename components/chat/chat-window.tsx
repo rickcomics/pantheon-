@@ -67,11 +67,15 @@ export function ChatWindow() {
         }),
       });
 
-      const data = await res.json();
-      const reply: ChatMessage = { role: "assistant", content: data.reply };
+      const data = await res.json().catch(() => ({ error: `Сервер ответил ${res.status}` }));
+      const reply: ChatMessage = {
+        role: "assistant",
+        content: data.reply ?? `⚠️ ${data.error || "Дух молчит. Попробуй ещё раз."}`,
+      };
       setMessages((m) => [...m, reply]);
     } catch (e) {
       console.error("Silence in the Pantheon...", e);
+      setMessages((m) => [...m, { role: "assistant", content: "⚠️ Нет связи с сервером. Попробуй ещё раз." }]);
     } finally {
       setLoading(false);
     }
