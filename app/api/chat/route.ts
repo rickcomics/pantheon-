@@ -118,6 +118,18 @@ function safeReadJSON(filePath: string): any[] {
   catch (e) { return []; }
 }
 
+// Бесплатные модели OpenRouter: основная + запасные, если первая перегружена
+// (основную можно переопределить через OPENROUTER_MODEL)
+const MODELS = [
+  process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free",
+  "google/gemma-2-9b-it:free",
+];
+
+// Не даём медленному шагу (загрузка модели эмбеддингов) подвесить весь ответ
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
+}
+
 const sessionMemory: Record<string, { facts: string[] }> = {};
 
 // --- 5. ОБРАБОТЧИК (POST) ---
@@ -139,7 +151,8 @@ if (onlySave && isManualGold) {
   
   if (!gold.some((g: any) => g.user === userMsg)) {
     gold.push(entry);
-    fs.writeFileSync(goldPath, JSON.stringify(gold.slice(-500), null, 2));
+    try { fs.writeFileSync(goldPath, JSON.stringify(gold.slice(-500), null, 2)); }
+    catch (e) { console.error("Gold write fail:", e); }
   }
   return NextResponse.json({ status: "crystallized" });
 }
@@ -154,62 +167,91 @@ if (onlySave && isManualGold) {
   sessionMemory[userId].facts = Array.from(new Set([...sessionMemory[userId].facts, ...currentTags])).slice(-30);
 
   // Запуск гибридного RAG
-  const relevantContext = await getContextFromFiles(personaId, lastUserMessage);
+  const relevantContext = await withTimeout(getContextFromFiles(personaId, lastUserMessage), 8000).catch((e) => {
+    console.error("RAG skipped:", e);
+    return "";
+  });
   const controls = personaControls[personaId as keyof typeof personaControls] || {};
   
-  const fullPrompt = `
+  const systemPrompt = `
 ${persona.systemPrompt}
-${relevantContext ? `ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ПАНТЕОНА:\n${relevantContext}` : "История чиста."}
-${messages.slice(-6).map((m: any) => `${m.role.toUpperCase()}: ${m.content}`).join("\n")}
-ASSISTANT:`.trim();
+${relevantContext ? `ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ПАНТЕОНА:\n${relevantContext}` : "История чиста."}`.trim();
 
-  const response = await fetch("http://localhost:11434/api/generate", {
-    method: "POST",
-    body: JSON.stringify({ 
-      model: "gemma3:4b", 
-      prompt: fullPrompt, 
-      stream: true,
-      options: { temperature: controls.temperature || 0.7, num_ctx: 4096 } 
-    }),
-  });
+  // --- LLM через OpenRouter ---
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return NextResponse.json({ error: "OPENROUTER_API_KEY не задан" }, { status: 500 });
 
-  if (!response.body) return NextResponse.json({ error: "No body" }, { status: 500 });
-  const reader = response.body.getReader();
-  let fullText = "";
+  const modelCandidates = Array.from(new Set(MODELS.filter(Boolean)));
+  let lastOpenRouterError: any = null;
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    const chunk = new TextDecoder().decode(value);
-    chunk.split("\n").forEach(line => {
+  for (const model of modelCandidates) {
+    try {
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": process.env.URL || "http://localhost:3000",
+          "X-Title": "Pantheon",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            ...messages.slice(-6).map((m: any) => ({ role: m.role, content: m.content })),
+          ],
+          temperature: (controls as any).temperature || 0.7,
+        }),
+      });
+
+      const rawText = await response.text();
+      let data: any = null;
+      try { data = JSON.parse(rawText); } catch { data = null; }
+
+      if (!response.ok || !data?.choices?.[0]?.message) {
+        const errText = data?.error?.message || rawText || `OpenRouter ответил ${response.status}`;
+        console.error("OpenRouter model failed:", model, response.status, errText);
+        lastOpenRouterError = { status: response.status, message: errText };
+        continue;
+      }
+
+      const fullText: string = data.choices[0].message.content || data.choices[0].message.reasoning || "";
+      const cleanReply = fullText.replace(/<thought>[\s\S]*?<\/thought>/g, "").trim();
+
+      // Логирование и самообучение (на Netlify файловая система только для чтения — ошибки записи не роняет ответ)
       try {
-        const json = JSON.parse(line);
-        if (json.response) fullText += json.response;
-      } catch (e) {}
-    });
-  }
+        const chatDir = path.resolve("./chats");
+        if (!fs.existsSync(chatDir)) fs.mkdirSync(chatDir);
+        const entry = { timestamp: new Date().toISOString(), user: lastUserMessage, assistant: cleanReply, tags: currentTags };
 
-  const cleanReply = fullText.replace(/<thought>[\s\S]*?<\/thought>/g, "").trim();
+        // Пишем в основную память
+        let history = safeReadJSON(path.join(chatDir, `${personaId}.json`));
+        history.push(entry);
+        fs.writeFileSync(path.join(chatDir, `${personaId}.json`), JSON.stringify(history.slice(-100), null, 2));
 
-  // Логирование и самообучение
-  const chatDir = path.resolve("./chats");
-  if (!fs.existsSync(chatDir)) fs.mkdirSync(chatDir);
-  const entry = { timestamp: new Date().toISOString(), user: lastUserMessage, assistant: cleanReply, tags: currentTags };
+        // Умная кристаллизация (Золотой Фонд)
+        if (isManualGold || cleanReply.length > (controls.gold_threshold || 500)) {
+          let gold = safeReadJSON(path.join(chatDir, `${personaId}_gold.json`));
+          if (!gold.some((g: any) => g.user === lastUserMessage)) {
+            gold.push(entry);
+            fs.writeFileSync(path.join(chatDir, `${personaId}_gold.json`), JSON.stringify(gold.slice(-500), null, 2));
+          }
+        }
+      } catch (e) { console.error("Memory write fail:", e); }
 
-  // Пишем в основную память
-  let history = safeReadJSON(path.join(chatDir, `${personaId}.json`));
-  history.push(entry);
-  fs.writeFileSync(path.join(chatDir, `${personaId}.json`), JSON.stringify(history.slice(-100), null, 2));
-
-  // Умная кристаллизация (Золотой Фонд)
-  if (isManualGold || cleanReply.length > (controls.gold_threshold || 500)) {
-    let gold = safeReadJSON(path.join(chatDir, `${personaId}_gold.json`));
-    if (!gold.some((g: any) => g.user === lastUserMessage)) {
-      gold.push(entry);
-      fs.writeFileSync(path.join(chatDir, `${personaId}_gold.json`), JSON.stringify(gold.slice(-500), null, 2));
+      return NextResponse.json({ reply: cleanReply });
+    } catch (error) {
+      console.error("OpenRouter request exception:", model, error);
+      lastOpenRouterError = error;
     }
   }
 
-  return NextResponse.json({ reply: cleanReply });
+  return NextResponse.json(
+    {
+      error: "OpenRouter unavailable",
+      details: lastOpenRouterError ? String(lastOpenRouterError) : "No model responded",
+    },
+    { status: 502 }
+  );
 }
 
