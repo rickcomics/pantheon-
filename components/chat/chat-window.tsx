@@ -68,7 +68,10 @@ export function ChatWindow() {
       });
 
       const data = await res.json();
-      const reply: ChatMessage = { role: "assistant", content: data.reply };
+      const reply: ChatMessage = {
+        role: "assistant",
+        content: data.reply ?? `⚠️ ${data.error || "Дух молчит. Попробуй ещё раз."}`,
+      };
       setMessages((m) => [...m, reply]);
     } catch (e) {
       console.error("Silence in the Pantheon...", e);
