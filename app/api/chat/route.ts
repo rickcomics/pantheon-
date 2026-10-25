@@ -118,8 +118,18 @@ function safeReadJSON(filePath: string): any[] {
   catch (e) { return []; }
 }
 
-// Бесплатная модель OpenRouter по умолчанию (можно переопределить через OPENROUTER_MODEL)
-const DEFAULT_MODEL = "openrouter/free";
+// Бесплатные модели OpenRouter: основная + запасные, если первая перегружена
+// (основную можно переопределить через OPENROUTER_MODEL)
+const MODELS = [
+  process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "openrouter/free",
+];
+
+// Не даём медленному шагу (загрузка модели эмбеддингов) подвесить весь ответ
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
+}
 
 const sessionMemory: Record<string, { facts: string[] }> = {};
 
@@ -158,7 +168,10 @@ if (onlySave && isManualGold) {
   sessionMemory[userId].facts = Array.from(new Set([...sessionMemory[userId].facts, ...currentTags])).slice(-30);
 
   // Запуск гибридного RAG
-  const relevantContext = await getContextFromFiles(personaId, lastUserMessage);
+  const relevantContext = await withTimeout(getContextFromFiles(personaId, lastUserMessage), 8000).catch((e) => {
+    console.error("RAG skipped:", e);
+    return "";
+  });
   const controls = personaControls[personaId as keyof typeof personaControls] || {};
   
   const systemPrompt = `
@@ -178,7 +191,7 @@ ${relevantContext ? `ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ПАНТЕО�
       "X-Title": "Pantheon",
     },
     body: JSON.stringify({
-      model: process.env.OPENROUTER_MODEL || DEFAULT_MODEL,
+      models: MODELS,
       messages: [
         { role: "system", content: systemPrompt },
         ...messages.slice(-6).map((m: any) => ({ role: m.role, content: m.content })),
@@ -195,7 +208,7 @@ ${relevantContext ? `ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ПАНТЕО�
       { status: 502 }
     );
   }
-  const fullText: string = data.choices[0].message.content || "";
+  const fullText: string = data.choices[0].message.content || data.choices[0].message.reasoning || "";
 
   const cleanReply = fullText.replace(/<thought>[\s\S]*?<\/thought>/g, "").trim();
 
