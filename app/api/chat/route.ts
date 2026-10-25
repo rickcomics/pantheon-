@@ -1,4 +1,4 @@
-// app/api/chat/route.ts — ФИНАЛЬНАЯ ИНТЕЛЛЕКТУАЛЬНАЯ ПОСТРОЙКА
+// app/api/chat/route.ts — Vercel-safe patch
 import { NextResponse } from "next/server";
 import { personasById } from "@/lib/personas";
 import personaControls from "@/layer/persona_controls.json";
@@ -7,11 +7,21 @@ import path from "path";
 import { Index } from "flexsearch";
 import { pipeline } from "@xenova/transformers";
 
+const CHAT_ROOT = process.env.VERCEL ? "/tmp/pantheon-chats" : path.resolve("./chats");
+
+function getChatDir() {
+  try {
+    if (!fs.existsSync(CHAT_ROOT)) fs.mkdirSync(CHAT_ROOT, { recursive: true });
+    return CHAT_ROOT;
+  } catch {
+    return "/tmp";
+  }
+}
+
 // --- 1. ЯДРО СЕМАНТИКИ (Transformers.js) ---
 let embedder: any = null;
 async function getEmbedder() {
   if (!embedder) {
-    // Модель all-MiniLM-L6-v2: идеальный баланс веса (45мб) и ума
     embedder = await pipeline("feature-extraction", "Xenova/all-MiniLM-L6-v2");
   }
   return embedder;
@@ -21,7 +31,8 @@ function cosineSimilarity(vecA: number[], vecB: number[]): number {
   let dotProduct = 0, mA = 0, mB = 0;
   for (let i = 0; i < vecA.length; i++) {
     dotProduct += vecA[i] * vecB[i];
-    mA += vecA[i] * vecA[i]; mB += vecB[i] * vecB[i];
+    mA += vecA[i] * vecA[i];
+    mB += vecB[i] * vecB[i];
   }
   return dotProduct / (Math.sqrt(mA) * Math.sqrt(mB));
 }
@@ -40,13 +51,15 @@ function extractTags(text: string): string[] {
 function simpleSearchScore(text: string, queryTags: string[]): number {
   const textStems = extractTags(text);
   let score = 0;
-  for (const q of queryTags) { if (textStems.includes(q)) score += q.length > 5 ? 2 : 1; }
+  for (const q of queryTags) {
+    if (textStems.includes(q)) score += q.length > 5 ? 2 : 1;
+  }
   return score;
 }
 
 // --- 3. ГИБРИДНЫЙ GRAPH RAG ДВИЖОК ---
 async function getContextFromFiles(personaId: string, userMessage: string, maxEntries = 4): Promise<string> {
-  const chatDir = path.resolve("./chats");
+  const chatDir = getChatDir();
   const goldPath = path.join(chatDir, `${personaId}_gold.json`);
   const historyPath = path.join(chatDir, `${personaId}.json`);
   const queryTags = extractTags(userMessage);
@@ -56,7 +69,6 @@ async function getContextFromFiles(personaId: string, userMessage: string, maxEn
   const searchIndex = new Index({ preset: "memory", tokenize: "forward" });
   let allKnowledge: any[] = [];
 
-  // Индексируем всё золото и историю
   [goldPath, historyPath].forEach((filePath) => {
     if (fs.existsSync(filePath)) {
       const isGold = filePath.includes("gold");
@@ -71,42 +83,42 @@ async function getContextFromFiles(personaId: string, userMessage: string, maxEn
 
   if (allKnowledge.length === 0) return "";
 
-  // А. Поиск по индексу (FlexSearch)
   const results = searchIndex.search(queryTags.join(" "), { limit: 15 });
-  let scored = results.map(id => {
-    const item = allKnowledge[id as number];
-    return { ...item, finalScore: simpleSearchScore(item.user, queryTags) * item.weight };
-  }).filter(e => e.finalScore > 0);
+  let scored = results
+    .map((id) => {
+      const item = allKnowledge[id as number];
+      return { ...item, finalScore: simpleSearchScore(item.user, queryTags) * item.weight };
+    })
+    .filter((e) => e.finalScore > 0);
 
-  // Б. Семантический добор (Transformers.js)
   if (scored.length < 2) {
     try {
       const generateEmbedding = await getEmbedder();
-      const userVector = await generateEmbedding(userMessage, { pooling: 'mean', normalize: true });
+      const userVector = await generateEmbedding(userMessage, { pooling: "mean", normalize: true });
       const userVecArray = Array.from(userVector.data as number[]);
-      const candidates = allKnowledge.slice(-40); 
+      const candidates = allKnowledge.slice(-40);
       for (const item of candidates) {
-        if (scored.some(s => s.user === item.user)) continue;
-        const itemVector = await generateEmbedding(item.user, { pooling: 'mean', normalize: true });
+        if (scored.some((s) => s.user === item.user)) continue;
+        const itemVector = await generateEmbedding(item.user, { pooling: "mean", normalize: true });
         const similarity = cosineSimilarity(userVecArray, Array.from(itemVector.data as number[]));
         if (similarity > 0.68) scored.push({ ...item, finalScore: similarity * item.weight * 4 });
       }
-    } catch (e) { console.error("Semantics fail:", e); }
+    } catch (e) {
+      console.error("Semantics fail:", e);
+    }
   }
 
-  // В. GRAPH RAG LITE (Ассоциации)
-  // Извлекаем все теги из того, что уже нашли
-  const foundTags = new Set(scored.flatMap(s => s.tags || []));
+  const foundTags = new Set(scored.flatMap((s) => s.tags || []));
   const associations = allKnowledge
-    .filter(item => !scored.some(s => s.id === item.id) && item.tags?.some((t: string) => foundTags.has(t)))
+    .filter((item) => !scored.some((s) => s.id === item.id) && item.tags?.some((t: string) => foundTags.has(t)))
     .sort((a, b) => (b.tags?.length || 0) - (a.tags?.length || 0))
-    .slice(0, 2); // Берем 2 мощных ассоциации по связям
+    .slice(0, 2);
 
   const finalContext = [...scored.sort((a, b) => b.finalScore - a.finalScore).slice(0, maxEntries), ...associations];
 
   return finalContext
-    .map(e => {
-      const type = associations.includes(e) ? "СВЯЗЬ" : (e.weight > 2 ? "ЗОЛОТО" : "ОПЫТ");
+    .map((e) => {
+      const type = associations.includes(e) ? "СВЯЗЬ" : e.weight > 2 ? "ЗОЛОТО" : "ОПЫТ";
       return `[${type}] USER: ${e.user}\nASSISTANT: ${e.assistant}`;
     })
     .join("\n---\n");
@@ -114,18 +126,30 @@ async function getContextFromFiles(personaId: string, userMessage: string, maxEn
 
 // --- 4. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 function safeReadJSON(filePath: string): any[] {
-  try { return fs.existsSync(filePath) ? JSON.parse(fs.readFileSync(filePath, "utf-8")) : []; }
-  catch (e) { return []; }
+  try {
+    return fs.existsSync(filePath) ? JSON.parse(fs.readFileSync(filePath, "utf-8")) : [];
+  } catch {
+    return [];
+  }
 }
 
-// Бесплатные модели OpenRouter: основная + запасные, если первая перегружена
-// (основную можно переопределить через OPENROUTER_MODEL)
+function writeJSONFile(filePath: string, value: any) {
+  try {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
+    return true;
+  } catch (e) {
+    console.error("JSON write fail:", filePath, e);
+    return false;
+  }
+}
+
 const MODELS = [
   process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free",
   "google/gemma-2-9b-it:free",
 ];
 
-// Не даём медленному шагу (загрузка модели эмбеддингов) подвесить весь ответ
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))]);
 }
@@ -134,52 +158,50 @@ const sessionMemory: Record<string, { facts: string[] }> = {};
 
 // --- 5. ОБРАБОТЧИК (POST) ---
 export async function POST(req: Request) {
-  const { personaId, messages, userId = "localUser", isManualGold, onlySave} = await req.json();
+  const { personaId, messages, userId = "localUser", isManualGold, onlySave } = await req.json();
 
-  // --- БЛОК БЫСТРОГО СОХРАНЕНИЯ ---
-if (onlySave && isManualGold) {
-  const lastPair = messages.slice(-2); // Берем User и Assistant сообщения
-  const userMsg = lastPair[0].content;
-  const assistMsg = lastPair[1].content;
-  const tags = extractTags(userMsg); // Генерим теги для графа связей
+  if (onlySave && isManualGold) {
+    const lastPair = messages.slice(-2);
+    const userMsg = lastPair[0]?.content || "";
+    const assistMsg = lastPair[1]?.content || "";
+    const tags = extractTags(userMsg);
 
-  const chatDir = path.resolve("./chats");
-  const goldPath = path.join(chatDir, `${personaId}_gold.json`);
-  let gold = safeReadJSON(goldPath);
+    const chatDir = getChatDir();
+    const goldPath = path.join(chatDir, `${personaId}_gold.json`);
+    let gold = safeReadJSON(goldPath);
+    const entry = { timestamp: new Date().toISOString(), user: userMsg, assistant: assistMsg, tags };
 
-  const entry = { timestamp: new Date().toISOString(), user: userMsg, assistant: assistMsg, tags };
-  
-  if (!gold.some((g: any) => g.user === userMsg)) {
-    gold.push(entry);
-    try { fs.writeFileSync(goldPath, JSON.stringify(gold.slice(-500), null, 2)); }
-    catch (e) { console.error("Gold write fail:", e); }
+    if (!gold.some((g: any) => g.user === userMsg)) {
+      gold.push(entry);
+      writeJSONFile(goldPath, gold.slice(-500));
+    }
+
+    return NextResponse.json({ status: "crystallized" });
   }
-  return NextResponse.json({ status: "crystallized" });
-}
+
   const persona = personasById[personaId];
   if (!persona) return NextResponse.json({ error: "No persona" }, { status: 400 });
 
   const lastUserMessage = messages.filter((m: any) => m.role === "user").pop()?.content || "";
   const currentTags = extractTags(lastUserMessage);
 
-  // Обновляем память сессии (теги)
   if (!sessionMemory[userId]) sessionMemory[userId] = { facts: [] };
   sessionMemory[userId].facts = Array.from(new Set([...sessionMemory[userId].facts, ...currentTags])).slice(-30);
 
-  // Запуск гибридного RAG
   const relevantContext = await withTimeout(getContextFromFiles(personaId, lastUserMessage), 8000).catch((e) => {
     console.error("RAG skipped:", e);
     return "";
   });
+
   const controls = personaControls[personaId as keyof typeof personaControls] || {};
-  
   const systemPrompt = `
 ${persona.systemPrompt}
 ${relevantContext ? `ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ПАНТЕОНА:\n${relevantContext}` : "История чиста."}`.trim();
 
-  // --- LLM через OpenRouter ---
   const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: "OPENROUTER_API_KEY не задан" }, { status: 500 });
+  if (!apiKey) {
+    return NextResponse.json({ error: "OPENROUTER_API_KEY не задан" }, { status: 500 });
+  }
 
   const modelCandidates = Array.from(new Set(MODELS.filter(Boolean)));
   let lastOpenRouterError: any = null;
@@ -206,7 +228,11 @@ ${relevantContext ? `ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ПАНТЕО�
 
       const rawText = await response.text();
       let data: any = null;
-      try { data = JSON.parse(rawText); } catch { data = null; }
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = null;
+      }
 
       if (!response.ok || !data?.choices?.[0]?.message) {
         const errText = data?.error?.message || rawText || `OpenRouter ответил ${response.status}`;
@@ -218,26 +244,26 @@ ${relevantContext ? `ДОПОЛНИТЕЛЬНЫЙ КОНТЕКСТ ПАНТЕО�
       const fullText: string = data.choices[0].message.content || data.choices[0].message.reasoning || "";
       const cleanReply = fullText.replace(/<thought>[\s\S]*?<\/thought>/g, "").trim();
 
-      // Логирование и самообучение (на Netlify файловая система только для чтения — ошибки записи не роняет ответ)
       try {
-        const chatDir = path.resolve("./chats");
-        if (!fs.existsSync(chatDir)) fs.mkdirSync(chatDir);
+        const chatDir = getChatDir();
         const entry = { timestamp: new Date().toISOString(), user: lastUserMessage, assistant: cleanReply, tags: currentTags };
 
-        // Пишем в основную память
-        let history = safeReadJSON(path.join(chatDir, `${personaId}.json`));
+        const historyPath = path.join(chatDir, `${personaId}.json`);
+        const history = safeReadJSON(historyPath);
         history.push(entry);
-        fs.writeFileSync(path.join(chatDir, `${personaId}.json`), JSON.stringify(history.slice(-100), null, 2));
+        writeJSONFile(historyPath, history.slice(-100));
 
-        // Умная кристаллизация (Золотой Фонд)
         if (isManualGold || cleanReply.length > (controls.gold_threshold || 500)) {
-          let gold = safeReadJSON(path.join(chatDir, `${personaId}_gold.json`));
+          const goldPath = path.join(chatDir, `${personaId}_gold.json`);
+          const gold = safeReadJSON(goldPath);
           if (!gold.some((g: any) => g.user === lastUserMessage)) {
             gold.push(entry);
-            fs.writeFileSync(path.join(chatDir, `${personaId}_gold.json`), JSON.stringify(gold.slice(-500), null, 2));
+            writeJSONFile(goldPath, gold.slice(-500));
           }
         }
-      } catch (e) { console.error("Memory write fail:", e); }
+      } catch (e) {
+        console.error("Memory write fail:", e);
+      }
 
       return NextResponse.json({ reply: cleanReply });
     } catch (error) {
